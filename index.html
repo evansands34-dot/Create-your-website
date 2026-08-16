@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Create Your Website — AI Builder</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#60a5fa}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{background:linear-gradient(180deg,#071022 0%, #07182a 100%);color:#e6eef8;display:flex;align-items:center;justify-content:center;padding:24px}
+    .container{width:100%;max-width:980px}
+    header{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+    h1{font-size:20px;margin:0}
+    p.lead{margin:0;color:var(--muted);font-size:13px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.04);padding:18px;border-radius:12px}
+    .row{display:flex;gap:12px}
+    .col{flex:1}
+    label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px}
+    input[type=text], input[type=password], textarea{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit;font-size:14px}
+    textarea{min-height:120px;resize:vertical}
+    .controls{display:flex;gap:12px;margin-top:12px}
+    button{background:var(--accent);border:none;padding:10px 14px;border-radius:8px;color:#06202e;cursor:pointer;font-weight:600}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+    .messages{margin-top:14px;max-height:320px;overflow:auto;padding:12px;border-radius:8px;border:1px dashed rgba(255,255,255,0.03)}
+    .msg{padding:8px;border-radius:8px;margin-bottom:8px}
+    .msg.you{background:rgba(96,165,250,0.08);color:var(--accent)}
+    .msg.ai{background:rgba(255,255,255,0.02)}
+    .files{margin-top:12px}
+    .file-item{font-family:monospace;background:rgba(0,0,0,0.25);padding:6px 8px;border-radius:6px;margin-bottom:6px}
+    footer{margin-top:12px;color:var(--muted);font-size:12px}
+    .warning{background:#3b2414;color:#ffd6b5;padding:10px;border-radius:8px;margin-bottom:12px}
+    @media(max-width:720px){.row{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Create Your Website — AI Builder</h1>
+        <p class="lead">Type a prompt describing the website you want. The AI will return a set of files you can download as a ZIP and push/deploy.</p>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="warning"><strong>Security:</strong> For this static demo you must provide an OpenAI API key below to let the browser call OpenAI directly. This exposes the key to the client — for production, run the requests from a server (I can add one for you).</div>
+
+      <div class="row">
+        <div class="col">
+          <label for="apiKey">OpenAI API Key</label>
+          <input id="apiKey" type="password" placeholder="sk-... (your OpenAI key)" />
+        </div>
+        <div style="width:160px">
+          <label for="model">Model</label>
+          <input id="model" type="text" value="gpt-4o-mini" />
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label for="prompt">Prompt (what site do you want?)</label>
+        <textarea id="prompt" placeholder="Example: A 3-page portfolio site with contact form, responsive, and uses Google Fonts. Include meta tags and instructions to set up a custom domain on Vercel."></textarea>
+      </div>
+
+      <div class="controls">
+        <button id="generate">Generate Website</button>
+        <button class="secondary" id="download" disabled>Download ZIP</button>
+        <button class="secondary" id="clear">Clear</button>
+      </div>
+
+      <div class="messages" id="messages" aria-live="polite"></div>
+
+      <div class="files" id="files"></div>
+
+      <footer>
+        Tip: Try prompts that specify pages, styling, and domain instructions. If you want me to add a server-side endpoint so you don't paste keys, I can push one to the repo and wire GitHub Actions / Vercel.
+      </footer>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <script>
+    const apiKeyInput = document.getElementById('apiKey')
+    const promptInput = document.getElementById('prompt')
+    const modelInput = document.getElementById('model')
+    const generateBtn = document.getElementById('generate')
+    const downloadBtn = document.getElementById('download')
+    const clearBtn = document.getElementById('clear')
+    const messages = document.getElementById('messages')
+    const filesEl = document.getElementById('files')
+
+    let lastFiles = null
+
+    function appendMsg(text, cls='ai'){
+      const d = document.createElement('div')
+      d.className = 'msg ' + cls
+      d.textContent = text
+      messages.appendChild(d)
+      messages.scrollTop = messages.scrollHeight
+    }
+
+    function clearMessages(){ messages.innerHTML = '' }
+
+    generateBtn.addEventListener('click', async ()=>{
+      const key = apiKeyInput.value.trim()
+      const prompt = promptInput.value.trim()
+      const model = modelInput.value.trim() || 'gpt-4o-mini'
+      if(!key){ alert('Please paste your OpenAI API key (for this demo). For production use a server-side key.') ; return }
+      if(!prompt){ alert('Please enter a prompt describing the site you want.') ; return }
+
+      clearMessages()
+      appendMsg('You: ' + prompt, 'you')
+      appendMsg('AI: Generating files — this may take a few seconds...')
+
+      // Build a deterministic instruction for the model to return JSON with files
+      const system = `You are a helpful assistant that outputs ONLY valid JSON. The JSON MUST be an object with a single key "files" whose value is an array of objects. Each object must have "path" (string) and "content" (string). Paths are relative (e.g., index.html, styles/main.css). The content should be the literal file contents. No extra commentary, no markdown fences.`
+
+      const user = `Create a working website project based on the user's request. The website should be fully functional as static files (HTML/CSS/JS). Provide any build or deploy instructions as a file named DEPLOYMENT.md if needed. "
+
+      // Compose the message payload
+      const messagesPayload = [
+        { role: 'system', content: system },
+        { role: 'user', content: user + '\n\nUser prompt:\n' + prompt }
+      ]
+
+      try{
+        const res = await fetch('https://api.openai.com/v1/chat/completions',{
+          method:'POST',
+          headers:{
+            'Content-Type':'application/json',
+            'Authorization':'Bearer ' + key
+          },
+          body: JSON.stringify({ model, messages: messagesPayload, temperature:0.2, max_tokens:2000 })
+        })
+
+        if(!res.ok){
+          const text = await res.text()
+          appendMsg('AI: Error from OpenAI API: ' + res.status + ' — ' + text)
+          return
+        }
+
+        const data = await res.json()
+        const reply = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content
+        if(!reply){ appendMsg('AI: No reply content received.'); return }
+
+        // Try to parse JSON from reply
+        let json = null
+        try{
+          json = JSON.parse(reply)
+        }catch(err){
+          // Sometimes models include pre/post text — try to extract a JSON substring
+          const first = reply.indexOf('{')
+          const last = reply.lastIndexOf('}')
+          if(first !== -1 && last !== -1){
+            const substring = reply.substring(first, last+1)
+            try{ json = JSON.parse(substring) }catch(e){ json = null }
+          }
+        }
+
+        if(!json || !Array.isArray(json.files)){
+          appendMsg('AI: Could not parse files JSON. Here is the raw response:')
+          appendMsg(reply)
+          return
+        }
+
+        // Display file list
+        filesEl.innerHTML = ''
+        lastFiles = json.files
+        json.files.forEach(f=>{
+          const e = document.createElement('div')
+          e.className = 'file-item'
+          e.textContent = f.path
+          filesEl.appendChild(e)
+        })
+
+        appendMsg('AI: Generated ' + json.files.length + ' files.')
+        downloadBtn.disabled = false
+
+      }catch(err){
+        appendMsg('AI: Error while calling OpenAI: ' + err.message)
+      }
+    })
+
+    downloadBtn.addEventListener('click', async ()=>{
+      if(!lastFiles){ alert('No files to download — generate first.'); return }
+      const zip = new JSZip()
+      for(const f of lastFiles){
+        zip.file(f.path, f.content)
+      }
+      const blob = await zip.generateAsync({type:'blob'})
+      saveAs(blob, 'generated-site.zip')
+    })
+
+    clearBtn.addEventListener('click', ()=>{
+      promptInput.value = ''
+      filesEl.innerHTML = ''
+      clearMessages()
+      downloadBtn.disabled = true
+      lastFiles = null
+    })
+  </script>
+</body>
+</html>
